@@ -1,0 +1,24 @@
+# dependencias y build
+node_modules
+.next/
+out/
+coverage/
+next-env.d.ts
+
+# entorno (no hay secretos en este proyecto, pero por si acaso)
+.env*
+!.env.example
+
+# v0 sandbox
+__v0_runtime_loader.js
+__v0_devtools.tsx
+__v0_jsx-dev-runtime.ts
+.snowflake/
+.design-cache/
+.v0-trash/
+.vercel/
+
+# sistema
+.DS_Store
+Thumbs.db
+tsconfig.tsbuildinfo

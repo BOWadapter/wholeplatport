@@ -1,0 +1,8 @@
+services:
+  app:
+    build: .
+    image: whole-platport-lite:latest
+    container_name: whole-platport-lite
+    ports:
+      - "3000:3000"
+    restart: unless-stopped

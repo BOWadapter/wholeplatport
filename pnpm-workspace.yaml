@@ -1,0 +1,7 @@
+minimumReleaseAgeExclude:
+  - '@next/*'
+  - next
+
+# esbuild (dependencia de vitest) necesita su script de instalación.
+allowBuilds:
+  esbuild: true
