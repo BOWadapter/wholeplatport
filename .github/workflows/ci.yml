@@ -25,15 +25,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build -t whole-platport-lite:ci .
-      - name: Arranque y respuesta HTTP
+      - name: Arranque, login y rutas protegidas
+        env:
+          AUTH_USERNAME: ci-user
+          AUTH_PASSWORD: ci-password-123
         run: |
-          docker run -d --name wpl -p 3000:3000 whole-platport-lite:ci
-          for i in $(seq 1 30); do curl -fs http://127.0.0.1:3000/ >/dev/null && break; sleep 1; done
+          AUTH_SECRET=$(openssl rand -hex 32)
+          docker run -d --name wpl -p 3000:3000 \
+            -e AUTH_USERNAME -e AUTH_PASSWORD -e AUTH_SECRET=$AUTH_SECRET \
+            whole-platport-lite:ci
+          for i in $(seq 1 30); do curl -fs -o /dev/null http://127.0.0.1:3000/login && break; sleep 1; done
+          base=http://127.0.0.1:3000
+
+          # Sin sesión, toda ruta redirige a /login (RN-10)
           for r in / /estrategias /riesgo /decisiones /copiloto /pruebas; do
-            curl -fs -o /dev/null http://127.0.0.1:3000$r || exit 1
-            echo "OK $r"
+            loc=$(curl -s -o /dev/null -w "%{redirect_url}" $base$r)
+            echo "$r -> $loc"; echo "$loc" | grep -q "/login" || exit 1
           done
-          curl -fs http://127.0.0.1:3000/pruebas | grep -q "PA-01"
+
+          # Contraseña incorrecta: sin cookie de sesión
+          curl -s -c bad.txt -o /dev/null -d "username=ci-user&password=mala-123456" $base/api/auth/login
+          if grep -q wpl_session bad.txt; then echo "login con contraseña mala creó sesión"; exit 1; fi
+
+          # Contraseña correcta: cookie y acceso a las 6 rutas
+          curl -s -c jar.txt -o /dev/null -d "username=$AUTH_USERNAME&password=$AUTH_PASSWORD" $base/api/auth/login
+          grep -q wpl_session jar.txt
+          for r in / /estrategias /riesgo /decisiones /copiloto /pruebas; do
+            code=$(curl -s -b jar.txt -o /dev/null -w "%{http_code}" $base$r)
+            echo "$r -> $code"; [ "$code" = 200 ] || exit 1
+          done
+          curl -fs -b jar.txt $base/pruebas | grep -q "PA-01"
       - name: Logs del contenedor
         if: always()
         run: docker logs wpl || true
