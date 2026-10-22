@@ -5,4 +5,9 @@ services:
     container_name: whole-platport-lite
     ports:
       - "3000:3000"
+    # Credenciales del inicio de sesión (RN-10). Se leen de .env; ver .env.example.
+    environment:
+      AUTH_USERNAME: ${AUTH_USERNAME:?Define AUTH_USERNAME en .env (copia .env.example)}
+      AUTH_PASSWORD: ${AUTH_PASSWORD:?Define AUTH_PASSWORD en .env}
+      AUTH_SECRET: ${AUTH_SECRET:?Define AUTH_SECRET en .env (32+ caracteres)}
     restart: unless-stopped

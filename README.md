@@ -14,6 +14,7 @@ Versión pequeña de **Whole Platport** (plataforma de inteligencia de portafoli
 | 4 · Datos | Tablas mínimas en memoria: `orders`, `decisions`, `riskEvents`, `equity` |
 | 5 · Inteligencia | Copiloto por plantillas deterministas: explica y resume, **no predice** |
 | 6 · Presentación | Dashboard Next.js con 6 pantallas |
+| Gobernanza | Inicio de sesión con usuario y contraseña definidos en `.env` (RN-10) |
 
 Capital inicial: 10,000 USDT, 50/50 entre estrategias. Comisión simulada: 0.1%. Línea base: buy-and-hold repartido en partes iguales en el tick 0.
 
@@ -30,6 +31,7 @@ Capital inicial: 10,000 USDT, 50/50 entre estrategias. Comisión simulada: 0.1%.
 | RN-7 | Indicadores robustos: sin datos suficientes devuelven valor neutral (RSI = 50); la señal de Bollinger se suprime cuando la volatilidad supera 1.5× su promedio. |
 | RN-8 | El copiloto nunca predice precios ni recomienda comprar o vender. |
 | RN-9 | Cuando el precio sale del rango del grid, el grid se re-centra (reset dinámico) y el reset queda en `decisions`. |
+| RN-10 | Solo usuarios autenticados acceden a la plataforma. Las credenciales viven en variables de entorno y, si faltan, nadie entra. |
 
 ## Trazabilidad: regla → código → prueba
 
@@ -44,6 +46,7 @@ Capital inicial: 10,000 USDT, 50/50 entre estrategias. Comisión simulada: 0.1%.
 | RN-7 | `lib/indicators.ts` (`rsi`, `volRegime`); `lib/strategies/smart-dca.ts` | `tests/acceptance.test.ts` (RN-7) |
 | RN-8 | `lib/copilot.ts` → `classify()` / `answer()` | PA-07 |
 | RN-9 | `lib/strategies/dynamic-grid.ts` | PA-08 |
+| RN-10 | `proxy.ts`; `lib/auth/*`; `app/api/auth/*` | PA-09 (`tests/auth.test.ts` y CI) |
 
 | PA | Qué verifica |
 | --- | --- |
@@ -55,21 +58,44 @@ Capital inicial: 10,000 USDT, 50/50 entre estrategias. Comisión simulada: 0.1%.
 | PA-06 | Ninguna compra ejecutada deja un activo arriba de 60%; las compras forzadas se rechazan por límite |
 | PA-07 | "¿BTC va a subir?", "¿Debería comprar ETH?" y "¿Cuánto va a valer XRP mañana?" no reciben predicción |
 | PA-08 | Al salir de rango, cada reset del grid aparece en `decisions` |
+| PA-09 | Sin sesión toda ruta redirige a `/login`; credenciales incorrectas no crean sesión; token alterado, vencido o de otro secreto se rechaza; `next` solo acepta rutas internas; 5 fallos bloquean 15 min; sin variables el login queda deshabilitado |
 
 Las pruebas corren sobre una simulación **aislada y nueva**, no sobre la que estás usando. Se ejecutan en la pantalla **/pruebas** y también en terminal:
 
 ```bash
 npm install -g pnpm@12.3.4   # versión fijada en package.json
 pnpm install
-pnpm test                    # 8 PA × 5 semillas + pruebas de reglas puras
+cp .env.example .env         # y edita usuario, contraseña y AUTH_SECRET
+pnpm test                    # 8 PA × 5 semillas + PA-09 (login) + reglas puras
 pnpm dev                     # http://localhost:3000
 ```
 
+## Inicio de sesión (RN-10)
+
+Un solo usuario, definido en variables de entorno. No hay base de datos de usuarios.
+
+| Variable | Requisito |
+| --- | --- |
+| `AUTH_USERNAME` | usuario para entrar |
+| `AUTH_PASSWORD` | mínimo 8 caracteres |
+| `AUTH_SECRET` | mínimo 32 caracteres aleatorios; firma la cookie de sesión |
+
+Genera el secreto con `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`.
+
+Cómo funciona: `proxy.ts` revisa cada petición; sin una cookie de sesión válida redirige a `/login`. El formulario envía a `POST /api/auth/login`, que compara las credenciales en tiempo constante y crea una cookie `httpOnly` firmada con HMAC-SHA256 que dura 8 horas. El botón de salida del encabezado llama a `POST /api/auth/logout`.
+
+Protecciones: falla cerrado (sin variables, nadie entra), rechazo de formularios de otro origen, redirección posterior solo a rutas internas, cookie `Secure` cuando se sirve por HTTPS y bloqueo de 15 minutos tras 5 intentos fallidos por IP.
+
+Límites conocidos: es un solo usuario sin roles; el bloqueo vive en memoria (se reinicia con el servidor y no se comparte entre réplicas) y toma la IP de `X-Forwarded-For`, que solo es confiable detrás de un proxy que la fije. Cambiar `AUTH_SECRET` cierra todas las sesiones abiertas.
+
+En la vista previa de v0 o en Vercel, define las tres variables en la configuración del proyecto (Environment Variables).
+
 ## Contenedor
 
-Requisito: Docker (Docker Desktop en Windows/macOS). El build ejecuta `tsc` y las 45 pruebas; si alguna PA falla, la imagen no se construye.
+Requisito: Docker (Docker Desktop en Windows/macOS). El build ejecuta `tsc` y todas las pruebas; si alguna PA falla, la imagen no se construye.
 
 ```bash
+cp .env.example .env           # Windows PowerShell: copy .env.example .env  (y edítalo)
 docker compose up -d --build   # http://localhost:3000
 docker compose logs -f         # ver el servidor
 docker compose down            # detener
@@ -79,14 +105,16 @@ Sin Compose:
 
 ```bash
 docker build -t whole-platport-lite .
-docker run --rm -p 3000:3000 whole-platport-lite
+docker run --rm -p 3000:3000 --env-file .env whole-platport-lite
 ```
 
-La imagen final usa Next.js en modo `standalone` sobre `node:22-alpine`, corre con un usuario sin privilegios e incluye un healthcheck. No necesita variables de entorno ni secretos: el estado de la simulación vive en el navegador de cada usuario.
+Compose se niega a arrancar si falta alguna variable `AUTH_*` en `.env`. El `.env` no entra a la imagen (`.dockerignore`) ni al repositorio (`.gitignore`).
+
+La imagen final usa Next.js en modo `standalone` sobre `node:22-alpine`, corre con un usuario sin privilegios e incluye un healthcheck. Solo necesita las tres variables `AUTH_*`; el estado de la simulación vive en el navegador de cada usuario.
 
 ## Integración continua
 
-`.github/workflows/ci.yml` corre en cada push a `main` y en cada PR: instala con el lockfile, `tsc`, pruebas, build, y luego construye la imagen Docker, la arranca y comprueba que las 6 rutas respondan.
+`.github/workflows/ci.yml` corre en cada push a `main` y en cada PR: instala con el lockfile, `tsc`, pruebas, build, y luego construye la imagen Docker, la arranca y comprueba el login de punta a punta: sin sesión las 6 rutas redirigen a `/login`, una contraseña incorrecta no crea sesión y con la correcta las 6 rutas responden 200.
 
 ## Pantallas
 
@@ -124,11 +152,14 @@ lib/
   copilot.ts               copiloto sin predicciones (RN-8)
   acceptance.ts            PA-01…PA-08
   format.ts                formato de moneda y porcentajes
+  auth/                    configuración, sesión firmada, credenciales y utilidades HTTP (RN-10)
+proxy.ts                   protege todas las rutas (RN-10)
 components/
   platport-context.tsx     estado global de la UI sobre el motor (+ localStorage opcional)
   app-shell.tsx            header con controles de simulación y menú lateral
   screens/                 una pantalla por archivo (portafolio, estrategias, riesgo, decisiones, copiloto, pruebas)
 app/                       rutas de Next.js; cada page.tsx solo monta su pantalla
+  login/, api/auth/        pantalla de acceso y endpoints de entrada y salida
 tests/acceptance.test.ts   las mismas PA con varias semillas (vitest)
 Dockerfile, compose.yaml   contenedor de producción
 .github/workflows/ci.yml   CI: pruebas, build e imagen Docker

@@ -1,6 +1,12 @@
 import { AppShell } from '@/components/app-shell'
 import { TestsScreen } from '@/components/screens/tests-screen'
+import { getSessionUser } from '@/lib/auth/server'
 
-export default function Page() {
-  return <AppShell><TestsScreen /></AppShell>
+export default async function Page() {
+  const user = await getSessionUser()
+  return (
+    <AppShell user={user}>
+      <TestsScreen />
+    </AppShell>
+  )
 }

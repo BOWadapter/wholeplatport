@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Menu, Moon, ShieldAlert, Sun, X } from 'lucide-react'
+import { LogOut, Menu, Moon, ShieldAlert, Sun, X } from 'lucide-react'
 import { useTheme } from 'next-themes'
 import { useEffect, useState, type ReactNode } from 'react'
 import { usePlatport } from '@/components/platport-context'
@@ -17,7 +17,7 @@ const navigation = [
   ['/pruebas', 'Pruebas'],
 ]
 
-export function AppShell({ children }: { children: ReactNode }) {
+export function AppShell({ children, user }: { children: ReactNode; user: string | null }) {
   const port = usePlatport()
   const pathname = usePathname()
   const { resolvedTheme, setTheme } = useTheme()
@@ -79,6 +79,14 @@ export function AppShell({ children }: { children: ReactNode }) {
           <ShieldAlert />
           {status === 'kill_switch' ? 'KILL SWITCH' : status}
         </span>
+        {user && (
+          <form className="session" method="post" action="/api/auth/logout">
+            <span className="session-user" title="Usuario de la sesión">{user}</span>
+            <button className="icon-button" type="submit" aria-label="Cerrar sesión" title="Cerrar sesión">
+              <LogOut />
+            </button>
+          </form>
+        )}
       </header>
       <div className="layout">
         <aside className={`sidebar ${menuOpen ? 'show' : ''}`}>
