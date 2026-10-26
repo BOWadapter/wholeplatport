@@ -39,14 +39,11 @@ jobs:
     needs: test
     steps:
       - uses: actions/checkout@v4
-      - name: .env de CI
-        run: |
-          {
-            echo "AUTH_USERNAME=ci-user"
-            echo "AUTH_PASSWORD=ci-password-123"
-            echo "AUTH_SECRET=$(openssl rand -hex 32)"
-            echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)"
-          } > .env
+      - name: .env de CI (con el mismo script que usan las personas)
+        env:
+          AUTH_USERNAME: ci-user
+          AUTH_PASSWORD: ci-password-123
+        run: ./scripts/setup.sh < /dev/null && grep -c "^AUTH_SECRET=.\{64\}$" .env
       - name: Levantar app + base con Compose
         run: docker compose up -d --build --wait --wait-timeout 180
       - name: Login y rutas protegidas

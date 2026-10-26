@@ -4,6 +4,17 @@ Versión pequeña de **Whole Platport** (plataforma de inteligencia de portafoli
 
 > Proyecto académico. **Todo es simulado**: no hay conexión a exchanges, no hay API keys y no hay dinero real. Los precios salen de una caminata aleatoria con semilla fija, así que todos ven los mismos resultados. Nada de lo que muestra es recomendación de inversión.
 
+## Empieza aquí
+
+```powershell
+git clone https://github.com/BOWadapter/wholeplatport.git
+cd wholeplatport
+powershell -ExecutionPolicy Bypass -File scripts\setup.ps1   # Windows  (Linux/macOS: ./scripts/setup.sh)
+docker compose up -d --build                                  # http://localhost:3000
+```
+
+El script crea tu `.env` con tu usuario, tu contraseña y secretos aleatorios. Requisitos, flujo de ramas y PRs, reglas del proyecto y solución de problemas: **[CONTRIBUTING.md](CONTRIBUTING.md)**.
+
 ## Qué incluye
 
 | Capa (Whole Platport) | En esta versión |
@@ -68,7 +79,7 @@ Las pruebas corren sobre una simulación **aislada y nueva**, no sobre la que es
 ```bash
 npm install -g pnpm@12.3.4   # versión fijada en package.json
 pnpm install
-cp .env.example .env         # y edita usuario, contraseña, AUTH_SECRET y POSTGRES_PASSWORD
+./scripts/setup.sh           # crea .env (Windows: scripts\setup.ps1)
 pnpm test                    # PA-01…PA-09; PA-10 también si defines DATABASE_URL
 pnpm dev                     # http://localhost:3000
 ```
@@ -131,7 +142,7 @@ Para correr la app o las pruebas fuera de Docker contra el Postgres de Compose: 
 Requisito: Docker (Docker Desktop en Windows/macOS). El build ejecuta `tsc` y todas las pruebas; si alguna PA falla, la imagen no se construye.
 
 ```bash
-cp .env.example .env           # Windows PowerShell: copy .env.example .env  (y edítalo: AUTH_* y POSTGRES_PASSWORD)
+./scripts/setup.sh             # Windows: powershell -ExecutionPolicy Bypass -File scripts\setup.ps1
 docker compose up -d --build   # http://localhost:3000
 docker compose logs -f         # ver el servidor
 docker compose down            # detener
@@ -199,7 +210,8 @@ components/
 app/                       rutas de Next.js; cada page.tsx solo monta su pantalla
   login/, api/auth/        pantalla de acceso y endpoints de entrada y salida
   corridas/, api/runs/     pantalla y API de corridas guardadas
-tests/acceptance.test.ts   las mismas PA con varias semillas (vitest)
+tests/                     PA con varias semillas, login (PA-09) y base de datos (PA-10)
+scripts/setup.ps1|.sh      crea el .env con secretos aleatorios
 Dockerfile, compose.yaml   contenedor de producción
 .github/workflows/ci.yml   CI: pruebas, build e imagen Docker
 ```
