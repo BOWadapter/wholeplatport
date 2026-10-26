@@ -43,6 +43,8 @@ export interface PlatportContextValue {
   setStrategyParam: (id: StrategyId, key: string, value: number) => string | undefined
   /** Gate de la demo: reinicia, calienta 72 ticks en mercado normal, cambia a "Caída tipo 2022" y avanza tick a tick hasta el disparo. */
   runGateDemo: () => void
+  /** Reemplaza la simulación por una corrida restaurada desde la base de datos (RN-11). */
+  loadSim: (state: SimState) => void
 }
 
 const Ctx = createContext<PlatportContextValue | null>(null)
@@ -152,6 +154,11 @@ export function PlatportProvider({ children }: { children: ReactNode }) {
         setAutoState(false)
         setSim(engineScenario(stepN(createSim(DEFAULT_SEED), GATE_WARMUP_TICKS), 'crash'))
         setGateRunning(true)
+      },
+      loadSim: (state) => {
+        setAutoState(false)
+        setGateRunning(false)
+        setSim(state)
       },
     }),
     [sim, auto, gateRunning, setSim],

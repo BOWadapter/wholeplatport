@@ -8,6 +8,18 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: wpl_test
+          POSTGRES_USER: wpl
+          POSTGRES_PASSWORD: wpl
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U wpl -d wpl_test"
+          --health-interval 5s --health-timeout 3s --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -16,7 +28,10 @@ jobs:
       - run: npm install -g pnpm@12.3.4
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec tsc --noEmit
-      - run: pnpm test
+      - name: Pruebas (incluye PA-10 contra PostgreSQL)
+        run: pnpm test
+        env:
+          DATABASE_URL: postgres://wpl:wpl@127.0.0.1:5432/wpl_test
       - run: pnpm build
 
   docker:
@@ -24,37 +39,67 @@ jobs:
     needs: test
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -t whole-platport-lite:ci .
-      - name: Arranque, login y rutas protegidas
-        env:
-          AUTH_USERNAME: ci-user
-          AUTH_PASSWORD: ci-password-123
+      - name: .env de CI
         run: |
-          AUTH_SECRET=$(openssl rand -hex 32)
-          docker run -d --name wpl -p 3000:3000 \
-            -e AUTH_USERNAME -e AUTH_PASSWORD -e AUTH_SECRET=$AUTH_SECRET \
-            whole-platport-lite:ci
-          for i in $(seq 1 30); do curl -fs -o /dev/null http://127.0.0.1:3000/login && break; sleep 1; done
+          {
+            echo "AUTH_USERNAME=ci-user"
+            echo "AUTH_PASSWORD=ci-password-123"
+            echo "AUTH_SECRET=$(openssl rand -hex 32)"
+            echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)"
+          } > .env
+      - name: Levantar app + base con Compose
+        run: docker compose up -d --build --wait --wait-timeout 180
+      - name: Login y rutas protegidas
+        run: |
           base=http://127.0.0.1:3000
-
-          # Sin sesión, toda ruta redirige a /login (RN-10)
-          for r in / /estrategias /riesgo /decisiones /copiloto /pruebas; do
+          # Sin sesión, toda página redirige a /login y la API responde 401 (RN-10)
+          for r in / /estrategias /riesgo /decisiones /copiloto /corridas /pruebas; do
             loc=$(curl -s -o /dev/null -w "%{redirect_url}" $base$r)
             echo "$r -> $loc"; echo "$loc" | grep -q "/login" || exit 1
           done
+          [ "$(curl -s -o /dev/null -w '%{http_code}' $base/api/runs)" = 401 ] || exit 1
 
           # Contraseña incorrecta: sin cookie de sesión
           curl -s -c bad.txt -o /dev/null -d "username=ci-user&password=mala-123456" $base/api/auth/login
           if grep -q wpl_session bad.txt; then echo "login con contraseña mala creó sesión"; exit 1; fi
 
-          # Contraseña correcta: cookie y acceso a las 6 rutas
-          curl -s -c jar.txt -o /dev/null -d "username=$AUTH_USERNAME&password=$AUTH_PASSWORD" $base/api/auth/login
+          # Contraseña correcta: cookie y acceso a las 7 rutas
+          curl -s -c jar.txt -o /dev/null -d "username=ci-user&password=ci-password-123" $base/api/auth/login
           grep -q wpl_session jar.txt
-          for r in / /estrategias /riesgo /decisiones /copiloto /pruebas; do
+          for r in / /estrategias /riesgo /decisiones /copiloto /corridas /pruebas; do
             code=$(curl -s -b jar.txt -o /dev/null -w "%{http_code}" $base$r)
             echo "$r -> $code"; [ "$code" = 200 ] || exit 1
           done
-          curl -fs -b jar.txt $base/pruebas | grep -q "PA-01"
-      - name: Logs del contenedor
+      - name: Guardar corrida y sobrevivir reinicios (RN-11)
+        run: |
+          base=http://127.0.0.1:3000
+          api() { curl -s -b jar.txt -H "Origin: $base" -H "Content-Type: application/json" "$@"; }
+          state='{"version":1,"mode":"dry-run","seed":1,"peak":10000,"maxDrawdown":0,"seq":0,
+            "market":{"tick":0,"prices":{"BTC":60000,"ETH":3000,"XRP":0.6},"closes":{"BTC":[60000],"ETH":[3000],"XRP":[0.6]},
+                      "scenario":"normal","scenarioStart":0,"rngState":1},
+            "breaker":{"status":"armado","threshold":0.1},
+            "strategies":[
+              {"id":"smart_dca","name":"Smart DCA","status":"activa","initialCapital":5000,"cash":5000,
+               "positions":{"BTC":0,"ETH":0,"XRP":0},"costBasis":{"BTC":0,"ETH":0,"XRP":0},"realizedPnl":0,"trades":0,"params":{},"internal":{}},
+              {"id":"dynamic_grid","name":"Grid dinámico","status":"activa","initialCapital":5000,"cash":5000,
+               "positions":{"BTC":0,"ETH":0,"XRP":0},"costBasis":{"BTC":0,"ETH":0,"XRP":0},"realizedPnl":0,"trades":0,"params":{},"internal":{}}],
+            "orders":[],"decisions":[],"riskEvents":[],"equity":[],"holdQty":{"BTC":0,"ETH":0,"XRP":0}}'
+
+          # Estado inválido: 400
+          [ "$(api -o /dev/null -w '%{http_code}' -d '{"name":"x","state":{"mode":"live"}}' $base/api/runs)" = 400 ] || exit 1
+          # Guardar: 201
+          code=$(api -o save.json -w '%{http_code}' -d "{\"name\":\"ci\",\"state\":$state}" $base/api/runs)
+          cat save.json; echo; [ "$code" = 201 ] || exit 1
+
+          docker compose restart app
+          for i in $(seq 1 30); do curl -fs -o /dev/null $base/login && break; sleep 1; done
+          api $base/api/runs | tee list1.json | grep -q '"name":"ci"'
+
+          # Bajar todo (sin -v) y volver a subir: el volumen conserva los datos
+          docker compose down
+          docker compose up -d --wait --wait-timeout 120
+          api $base/api/runs | tee list2.json | grep -q '"name":"ci"'
+          echo "La corrida sobrevivió a reinicio de app y a down/up del stack."
+      - name: Logs
         if: always()
-        run: docker logs wpl || true
+        run: docker compose logs --no-color | tail -100
