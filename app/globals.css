@@ -805,3 +805,12 @@ td.truncate {
     flex: 1 1 100%;
   }
 }
+
+/* ---------- Corridas (RN-11) ---------- */
+.row-actions {
+  display: flex;
+  gap: 6px;
+}
+.row-actions button {
+  padding: 4px 10px;
+}

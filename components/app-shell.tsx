@@ -14,6 +14,7 @@ const navigation = [
   ['/riesgo', 'Riesgo'],
   ['/decisiones', 'Decisiones'],
   ['/copiloto', 'Copiloto'],
+  ['/corridas', 'Corridas'],
   ['/pruebas', 'Pruebas'],
 ]
 

@@ -16,6 +16,11 @@ export async function proxy(request: NextRequest) {
   const session = auth.ok ? await verifySessionToken(token, auth.config.secret) : null
   if (session) return NextResponse.next()
 
+  // La API responde 401 en JSON; las páginas redirigen al formulario.
+  if (pathname.startsWith('/api/')) {
+    return NextResponse.json({ error: 'Sesión requerida.' }, { status: 401 })
+  }
+
   const loginUrl = new URL('/login', request.url)
   if (pathname !== '/') loginUrl.searchParams.set('next', `${pathname}${search}`)
   const response = NextResponse.redirect(loginUrl)

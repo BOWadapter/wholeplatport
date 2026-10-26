@@ -11,7 +11,7 @@ Versión pequeña de **Whole Platport** (plataforma de inteligencia de portafoli
 | 1 · Mercados | BTC, ETH y XRP simulados y correlacionados (factor de mercado común). 1 tick = 1 hora. Escenarios: normal, lateral y caída tipo 2022 (−30% en ~48 ticks con volatilidad ×2.2) |
 | 2 · Ejecución | Dos estrategias detrás de una interfaz común: **Smart DCA** (compra programada + RSI + Bollinger) y **Grid dinámico** (niveles con reset al salir de rango) |
 | 3 · Riesgo | Exposición agregada, límite de 60% por activo, **circuit breaker global** sobre el drawdown del portafolio y **kill switch** |
-| 4 · Datos | Tablas mínimas en memoria: `orders`, `decisions`, `riskEvents`, `equity` |
+| 4 · Datos | PostgreSQL 17: corridas guardadas con sus `orders`, `decisions` y `risk_events` normalizadas (RN-11) |
 | 5 · Inteligencia | Copiloto por plantillas deterministas: explica y resume, **no predice** |
 | 6 · Presentación | Dashboard Next.js con 6 pantallas |
 | Gobernanza | Inicio de sesión con usuario y contraseña definidos en `.env` (RN-10) |
@@ -32,6 +32,7 @@ Capital inicial: 10,000 USDT, 50/50 entre estrategias. Comisión simulada: 0.1%.
 | RN-8 | El copiloto nunca predice precios ni recomienda comprar o vender. |
 | RN-9 | Cuando el precio sale del rango del grid, el grid se re-centra (reset dinámico) y el reset queda en `decisions`. |
 | RN-10 | Solo usuarios autenticados acceden a la plataforma. Las credenciales viven en variables de entorno y, si faltan, nadie entra. |
+| RN-11 | Una corrida guardada se restaura idéntica (y la simulación continúa igual); cada usuario solo ve, carga y elimina sus corridas; guardar es todo o nada. |
 
 ## Trazabilidad: regla → código → prueba
 
@@ -47,6 +48,7 @@ Capital inicial: 10,000 USDT, 50/50 entre estrategias. Comisión simulada: 0.1%.
 | RN-8 | `lib/copilot.ts` → `classify()` / `answer()` | PA-07 |
 | RN-9 | `lib/strategies/dynamic-grid.ts` | PA-08 |
 | RN-10 | `proxy.ts`; `lib/auth/*`; `app/api/auth/*` | PA-09 (`tests/auth.test.ts` y CI) |
+| RN-11 | `lib/db/*`; `app/api/runs/*` | PA-10 (`tests/db.test.ts` contra PostgreSQL y CI) |
 
 | PA | Qué verifica |
 | --- | --- |
@@ -59,14 +61,15 @@ Capital inicial: 10,000 USDT, 50/50 entre estrategias. Comisión simulada: 0.1%.
 | PA-07 | "¿BTC va a subir?", "¿Debería comprar ETH?" y "¿Cuánto va a valer XRP mañana?" no reciben predicción |
 | PA-08 | Al salir de rango, cada reset del grid aparece en `decisions` |
 | PA-09 | Sin sesión toda ruta redirige a `/login`; credenciales incorrectas no crean sesión; token alterado, vencido o de otro secreto se rechaza; `next` solo acepta rutas internas; 5 fallos bloquean 15 min; sin variables el login queda deshabilitado |
+| PA-10 | Migraciones idempotentes; guardar crea la corrida con sus filas y ninguna orden sin decisión; restaurar da el mismo estado y el mismo futuro; otro usuario no puede leer ni borrar; mismo nombre reemplaza; borrar es en cascada; una falla a medio guardar no deja filas |
 
 Las pruebas corren sobre una simulación **aislada y nueva**, no sobre la que estás usando. Se ejecutan en la pantalla **/pruebas** y también en terminal:
 
 ```bash
 npm install -g pnpm@12.3.4   # versión fijada en package.json
 pnpm install
-cp .env.example .env         # y edita usuario, contraseña y AUTH_SECRET
-pnpm test                    # 8 PA × 5 semillas + PA-09 (login) + reglas puras
+cp .env.example .env         # y edita usuario, contraseña, AUTH_SECRET y POSTGRES_PASSWORD
+pnpm test                    # PA-01…PA-09; PA-10 también si defines DATABASE_URL
 pnpm dev                     # http://localhost:3000
 ```
 
@@ -90,12 +93,45 @@ Límites conocidos: es un solo usuario sin roles; el bloqueo vive en memoria (se
 
 En la vista previa de v0 o en Vercel, define las tres variables en la configuración del proyecto (Environment Variables).
 
+## Base de datos (RN-11)
+
+PostgreSQL 17 corre como servicio `db` en `compose.yaml`, con un volumen (`pgdata`) para que los datos sobrevivan a `docker compose down`. La pantalla **Corridas** guarda la simulación actual con un nombre y permite cargarla después, desde cualquier navegador, o eliminarla.
+
+| Tabla | Contenido |
+| --- | --- |
+| `simulations` | una fila por corrida: dueño, nombre, resumen (tick, valor, drawdown, breaker) y el estado completo en `state` (JSONB) |
+| `orders` | las órdenes de la corrida |
+| `decisions` | por qué se abrió o rechazó cada orden, resets del grid y señales suprimidas (RN-2) |
+| `risk_events` | disparos del breaker, kill switch, reanudaciones y cambios de umbral |
+| `schema_migrations` | migraciones aplicadas |
+
+- `state` permite restaurar la corrida exacta; las tablas normalizadas permiten consultarla con SQL.
+- Las migraciones están en `lib/db/migrations.ts` y se aplican solas al primer uso. Para cambiar el esquema, agrega una migración nueva al final; nunca edites una publicada.
+- Guardar es una sola transacción: o queda la corrida con todas sus filas, o nada. Si el nombre ya existe para ese usuario, se reemplaza.
+- Sin `DATABASE_URL` la app funciona igual; solo la pantalla Corridas avisa que no hay base.
+- Límites: 50 corridas por usuario y 5 MB por corrida.
+
+Consultar la base desde la terminal:
+
+```bash
+docker compose exec db psql -U wpl -d wpl
+```
+
+```sql
+-- ¿Qué reglas generaron más decisiones en cada corrida?
+SELECT s.name, d.rule, d.result, count(*)
+FROM decisions d JOIN simulations s ON s.id = d.simulation_id
+GROUP BY 1, 2, 3 ORDER BY 1, 4 DESC;
+```
+
+Para correr la app o las pruebas fuera de Docker contra el Postgres de Compose: `docker compose up -d db` y define en `.env` `DATABASE_URL=postgres://wpl:<POSTGRES_PASSWORD>@127.0.0.1:5432/wpl`. Si el puerto 5432 ya está ocupado en tu máquina, define `DB_PORT=5433` y ajusta la URL.
+
 ## Contenedor
 
 Requisito: Docker (Docker Desktop en Windows/macOS). El build ejecuta `tsc` y todas las pruebas; si alguna PA falla, la imagen no se construye.
 
 ```bash
-cp .env.example .env           # Windows PowerShell: copy .env.example .env  (y edítalo)
+cp .env.example .env           # Windows PowerShell: copy .env.example .env  (y edítalo: AUTH_* y POSTGRES_PASSWORD)
 docker compose up -d --build   # http://localhost:3000
 docker compose logs -f         # ver el servidor
 docker compose down            # detener
@@ -105,16 +141,16 @@ Sin Compose:
 
 ```bash
 docker build -t whole-platport-lite .
-docker run --rm -p 3000:3000 --env-file .env whole-platport-lite
+docker run --rm -p 3000:3000 --env-file .env whole-platport-lite   # sin base: Corridas queda deshabilitada
 ```
 
-Compose se niega a arrancar si falta alguna variable `AUTH_*` en `.env`. El `.env` no entra a la imagen (`.dockerignore`) ni al repositorio (`.gitignore`).
+Compose se niega a arrancar si falta alguna variable `AUTH_*` o `POSTGRES_PASSWORD` en `.env`. La app espera a que la base esté sana antes de arrancar. `docker compose down` conserva los datos; `docker compose down -v` los borra. El `.env` no entra a la imagen (`.dockerignore`) ni al repositorio (`.gitignore`).
 
-La imagen final usa Next.js en modo `standalone` sobre `node:22-alpine`, corre con un usuario sin privilegios e incluye un healthcheck. Solo necesita las tres variables `AUTH_*`; el estado de la simulación vive en el navegador de cada usuario.
+La imagen final usa Next.js en modo `standalone` sobre `node:22-alpine`, corre con un usuario sin privilegios e incluye un healthcheck. Necesita las variables `AUTH_*` y la base de datos del servicio `db`. La simulación en curso vive en el navegador; las corridas guardadas, en PostgreSQL.
 
 ## Integración continua
 
-`.github/workflows/ci.yml` corre en cada push a `main` y en cada PR: instala con el lockfile, `tsc`, pruebas, build, y luego construye la imagen Docker, la arranca y comprueba el login de punta a punta: sin sesión las 6 rutas redirigen a `/login`, una contraseña incorrecta no crea sesión y con la correcta las 6 rutas responden 200.
+`.github/workflows/ci.yml` corre en cada push a `main` y en cada PR: instala con el lockfile, `tsc`, pruebas (con un servicio PostgreSQL para PA-10), build, y luego construye la imagen Docker, la arranca y comprueba el login de punta a punta: sin sesión las 6 rutas redirigen a `/login`, una contraseña incorrecta no crea sesión y con la correcta las 7 rutas responden 200. Luego guarda una corrida por la API y comprueba que sobrevive a reiniciar la app y a `docker compose down` / `up`.
 
 ## Pantallas
 
@@ -125,6 +161,7 @@ La imagen final usa Next.js en modo `standalone` sobre `node:22-alpine`, corre c
 | `/riesgo` | Umbral, drawdown, kill switch, historial de eventos y reanudación con motivo |
 | `/decisiones` | Registro de decisiones filtrable por estrategia, activo y resultado |
 | `/copiloto` | Preguntas sobre el estado (resumen, pausas, estrategias, exposición, decisiones) |
+| `/corridas` | Guardar la simulación en PostgreSQL, cargarla después y eliminarla |
 | `/pruebas` | PA-01…PA-08 ejecutables con resultado y detalle |
 
 ## Gate de la demo
@@ -153,13 +190,15 @@ lib/
   acceptance.ts            PA-01…PA-08
   format.ts                formato de moneda y porcentajes
   auth/                    configuración, sesión firmada, credenciales y utilidades HTTP (RN-10)
+  db/                      cliente, migraciones, repositorio de corridas y validación (RN-11)
 proxy.ts                   protege todas las rutas (RN-10)
 components/
   platport-context.tsx     estado global de la UI sobre el motor (+ localStorage opcional)
   app-shell.tsx            header con controles de simulación y menú lateral
-  screens/                 una pantalla por archivo (portafolio, estrategias, riesgo, decisiones, copiloto, pruebas)
+  screens/                 una pantalla por archivo (portafolio, estrategias, riesgo, decisiones, copiloto, corridas, pruebas)
 app/                       rutas de Next.js; cada page.tsx solo monta su pantalla
   login/, api/auth/        pantalla de acceso y endpoints de entrada y salida
+  corridas/, api/runs/     pantalla y API de corridas guardadas
 tests/acceptance.test.ts   las mismas PA con varias semillas (vitest)
 Dockerfile, compose.yaml   contenedor de producción
 .github/workflows/ci.yml   CI: pruebas, build e imagen Docker
