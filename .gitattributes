@@ -1,0 +1,11 @@
+# Finales de línea consistentes entre Windows, macOS y Linux.
+* text=auto eol=lf
+
+# Scripts de Windows en CRLF; los de shell siempre en LF (con CRLF fallan en Linux/Docker).
+*.ps1 text eol=crlf
+*.sh  text eol=lf
+
+# Binarios
+*.png binary
+*.jpg binary
+*.ico binary
